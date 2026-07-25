@@ -4,6 +4,7 @@ import sys
 import pandas as pd
 import streamlit as st
 
+
 # ---------------------------------------------------------
 # Project setup
 # ---------------------------------------------------------
@@ -23,12 +24,26 @@ st.set_page_config(
 
 
 # ---------------------------------------------------------
-# Load and prepare data
+# Load data
 # ---------------------------------------------------------
 
 @st.cache_data
 def load_data() -> pd.DataFrame:
     raw_data = pd.read_csv(DATA_PATH)
+
+    date_columns = [
+        "last_review_date",
+        "next_review_date",
+        "target_action_date",
+    ]
+
+    for column in date_columns:
+        if column in raw_data.columns:
+            raw_data[column] = pd.to_datetime(
+                raw_data[column],
+                errors="coerce",
+            )
+
     return evaluate_governance_status(raw_data)
 
 
@@ -36,19 +51,89 @@ df = load_data()
 
 
 # ---------------------------------------------------------
-# Page header
+# Helper functions
+# ---------------------------------------------------------
+
+def split_items(value: object) -> list[str]:
+    """Convert a semicolon-delimited CSV value into clean items."""
+    if pd.isna(value):
+        return []
+
+    return [
+        item.strip()
+        for item in str(value).split(";")
+        if item.strip()
+    ]
+
+
+def format_date(value: object) -> str:
+    """Format a date safely for display."""
+    if pd.isna(value):
+        return "Not Available"
+
+    return pd.to_datetime(value).strftime("%Y-%m-%d")
+
+
+def display_success_items(items: list[str]) -> None:
+    """Display approved items in two columns."""
+    if not items:
+        st.warning("No approved items are documented.")
+        return
+
+    item_columns = st.columns(2)
+
+    for index, item in enumerate(items):
+        with item_columns[index % 2]:
+            if item in {
+                "No Enterprise Capabilities Approved",
+                "No Enterprise Use Cases Approved",
+            }:
+                st.error(f"✖ {item}")
+            else:
+                st.success(f"✓ {item}")
+
+
+def display_prohibited_items(items: list[str]) -> None:
+    """Display prohibited items in two columns."""
+    if not items:
+        st.info("No prohibited uses are documented.")
+        return
+
+    item_columns = st.columns(2)
+
+    for index, item in enumerate(items):
+        with item_columns[index % 2]:
+            st.error(f"✖ {item}")
+
+
+def display_control_items(items: list[str]) -> None:
+    """Display required security controls in three columns."""
+    if not items:
+        st.warning("No required security controls are documented.")
+        return
+
+    control_columns = st.columns(3)
+
+    for index, item in enumerate(items):
+        with control_columns[index % 3]:
+            st.info(f"🛡️ {item}")
+
+
+# ---------------------------------------------------------
+# Header
 # ---------------------------------------------------------
 
 st.title("Enterprise Service Governance Catalog")
 
 st.caption(
-    "Centralized visibility into approved services, ownership, architecture "
-    "approvals, approved capabilities, risk, regions, and review readiness."
+    "A centralized governance decision portal for reviewing approved cloud "
+    "services, capabilities, use cases, architecture approvals, security "
+    "controls, risk exceptions, and required actions."
 )
 
 
 # ---------------------------------------------------------
-# KPI summary
+# Enterprise KPI summary
 # ---------------------------------------------------------
 
 total_services = len(df)
@@ -65,26 +150,55 @@ expired_reviews = int(
     df["review_expired"].sum()
 )
 
-c1, c2, c3, c4 = st.columns(4)
+pending_actions = int(
+    (
+        (df["governance_readiness"] != "Ready")
+        | df["review_expired"]
+    ).sum()
+)
 
-c1.metric(
+risk_acceptance_required = int(
+    df["risk_acceptance_required"]
+    .fillna("")
+    .astype(str)
+    .str.strip()
+    .str.lower()
+    .eq("yes")
+    .sum()
+)
+
+kpi_row_1 = st.columns(4)
+
+kpi_row_1[0].metric(
     "Total Services",
     total_services,
 )
 
-c2.metric(
+kpi_row_1[1].metric(
     "Governance Ready",
     governance_ready,
 )
 
-c3.metric(
+kpi_row_1[2].metric(
     "High/Critical Risk",
     high_critical_risk,
 )
 
-c4.metric(
+kpi_row_1[3].metric(
     "Expired Reviews",
     expired_reviews,
+)
+
+kpi_row_2 = st.columns(2)
+
+kpi_row_2[0].metric(
+    "Pending Governance Actions",
+    pending_actions,
+)
+
+kpi_row_2[1].metric(
+    "Risk Acceptance Required",
+    risk_acceptance_required,
 )
 
 st.divider()
@@ -98,7 +212,7 @@ with st.sidebar:
     st.header("Filters")
 
     search_term = st.text_input(
-        "Search service, owner, capability, or description"
+        "Search service, owner, capability, control, use case, or risk"
     )
 
     cloud_options = sorted(
@@ -130,6 +244,11 @@ with st.sidebar:
         ["Low", "Medium", "High", "Critical"],
     )
 
+    selected_risk_acceptance = st.selectbox(
+        "Risk acceptance required",
+        ["All", "Yes", "No"],
+    )
+
 
 # ---------------------------------------------------------
 # Apply filters
@@ -138,30 +257,81 @@ with st.sidebar:
 filtered = df.copy()
 
 if search_term:
-    search_mask = (
-        filtered["service_name"].str.contains(
-            search_term,
-            case=False,
-            na=False,
-        )
-        | filtered["service_owner"].str.contains(
-            search_term,
-            case=False,
-            na=False,
-        )
-        | filtered["description"].str.contains(
-            search_term,
-            case=False,
-            na=False,
-        )
-        | filtered["approved_capabilities"].str.contains(
-            search_term,
-            case=False,
-            na=False,
-        )
+    searchable_columns = [
+        "service_id",
+        "service_name",
+        "cloud_provider",
+        "category",
+        "approval_status",
+        "approved_regions",
+        "service_owner",
+        "risk_level",
+        "approved_capabilities",
+        "approved_use_cases",
+        "prohibited_use_cases",
+        "required_controls",
+        "nist_functions",
+        "governance_decision",
+        "current_blockers",
+        "recommended_actions",
+        "action_owner",
+        "risk_acceptance_required",
+        "compensating_controls",
+        "description",
+    ]
+
+    existing_searchable_columns = [
+        column
+        for column in searchable_columns
+        if column in filtered.columns
+    ]
+
+    search_index = (
+        filtered[existing_searchable_columns]
+        .fillna("")
+        .astype(str)
+        .agg(" ".join, axis=1)
     )
 
-    filtered = filtered[search_mask]
+    risk_acceptance_labels = (
+        filtered["risk_acceptance_required"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        .map(
+            {
+                "yes": (
+                    "risk acceptance required "
+                    "exception review required "
+                    "formal risk acceptance "
+                    "security exception"
+                ),
+                "no": (
+                    "risk acceptance not required "
+                    "no security exception required"
+                ),
+            }
+        )
+        .fillna("")
+    )
+
+    search_index = (
+        search_index
+        + " "
+        + risk_acceptance_labels
+    ).str.lower()
+
+    normalized_search_term = search_term.strip().lower()
+
+    filtered = filtered[
+        search_index.str.contains(
+            normalized_search_term,
+            case=False,
+            na=False,
+            regex=False,
+        )
+    ]
 
 if selected_clouds:
     filtered = filtered[
@@ -178,6 +348,16 @@ if selected_risks:
         filtered["risk_level"].isin(selected_risks)
     ]
 
+if selected_risk_acceptance != "All":
+    filtered = filtered[
+        filtered["risk_acceptance_required"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        == selected_risk_acceptance.lower()
+    ]
+
 
 # ---------------------------------------------------------
 # Service inventory
@@ -186,8 +366,8 @@ if selected_risks:
 st.subheader("Service Inventory")
 
 st.caption(
-    "Filter the inventory and select a service from the dropdown "
-    "to view its complete governance profile."
+    "Search by service name, capability, security control, approved use case, "
+    "risk condition, or responsible owner."
 )
 
 inventory_columns = [
@@ -197,13 +377,10 @@ inventory_columns = [
     "category",
     "approval_status",
     "governance_readiness",
-    "approved_regions",
-    "approved_capabilities",
-    "service_owner",
-    "ea_approval",
-    "cada_approval",
     "risk_level",
-    "next_review_date",
+    "governance_decision",
+    "service_owner",
+    "target_action_date",
 ]
 
 sorted_inventory = (
@@ -229,7 +406,7 @@ else:
 
 
 # ---------------------------------------------------------
-# Service profile selector
+# Service selector
 # ---------------------------------------------------------
 
 service_options = sorted_inventory["service_name"].tolist()
@@ -242,7 +419,7 @@ selected_service_name = st.selectbox(
 
 
 # ---------------------------------------------------------
-# Selected service governance profile
+# Service governance profile
 # ---------------------------------------------------------
 
 if selected_service_name != "Select a service":
@@ -255,49 +432,121 @@ if selected_service_name != "Select a service":
     st.divider()
 
     st.subheader(
-        f"Service Profile — "
-        f"{selected_service['service_name']}"
+        f"Service Profile — {selected_service['service_name']}"
     )
 
-    status_col1, status_col2, status_col3, status_col4 = (
-        st.columns(4)
-    )
+    profile_metrics = st.columns(4)
 
-    status_col1.metric(
+    profile_metrics[0].metric(
         "Approval Status",
         selected_service["approval_status"],
     )
 
-    status_col2.metric(
+    profile_metrics[1].metric(
         "Governance Readiness",
         selected_service["governance_readiness"],
     )
 
-    status_col3.metric(
+    profile_metrics[2].metric(
         "Risk Level",
         selected_service["risk_level"],
     )
 
-    status_col4.metric(
+    profile_metrics[3].metric(
         "Cloud Provider",
         selected_service["cloud_provider"],
     )
 
     st.divider()
 
-    profile_col1, profile_col2, profile_col3 = st.columns(3)
 
-    with profile_col1:
+    # -----------------------------------------------------
+    # Governance decision
+    # -----------------------------------------------------
+
+    st.markdown("## Governance Decision")
+
+    governance_decision = str(
+        selected_service["governance_decision"]
+    )
+
+    if (
+        selected_service["approval_status"] == "Approved"
+        and selected_service["governance_readiness"] == "Ready"
+    ):
+        st.success(governance_decision)
+
+    elif selected_service["approval_status"] == "Not Approved":
+        st.error(governance_decision)
+
+    else:
+        st.warning(governance_decision)
+
+    decision_col1, decision_col2 = st.columns(2)
+
+    with decision_col1:
+        st.markdown("#### Current Blockers")
+
+        blockers = split_items(
+            selected_service["current_blockers"]
+        )
+
+        if blockers == ["No active blockers"]:
+            st.success("✓ No active blockers")
+
+        elif blockers:
+            for blocker in blockers:
+                st.error(f"• {blocker}")
+
+        else:
+            st.info("No blockers are documented.")
+
+    with decision_col2:
+        st.markdown("#### Recommended Actions")
+
+        actions = split_items(
+            selected_service["recommended_actions"]
+        )
+
+        if actions:
+            for action in actions:
+                st.info(f"→ {action}")
+
+        else:
+            st.info("No recommended actions are documented.")
+
+    action_col1, action_col2, action_col3 = st.columns(3)
+
+    action_col1.write(
+        f"**Action Owner:** "
+        f"{selected_service['action_owner']}"
+    )
+
+    action_col2.write(
+        f"**Target Action Date:** "
+        f"{format_date(selected_service['target_action_date'])}"
+    )
+
+    action_col3.write(
+        f"**Risk Acceptance Required:** "
+        f"{selected_service['risk_acceptance_required']}"
+    )
+
+    st.divider()
+
+
+    # -----------------------------------------------------
+    # Service details
+    # -----------------------------------------------------
+
+    detail_col1, detail_col2, detail_col3 = st.columns(3)
+
+    with detail_col1:
         st.markdown("#### Service Information")
 
         st.write(
             f"**Service ID:** "
             f"{selected_service['service_id']}"
-        )
-
-        st.write(
-            f"**Service Name:** "
-            f"{selected_service['service_name']}"
         )
 
         st.write(
@@ -310,7 +559,12 @@ if selected_service_name != "Select a service":
             f"{selected_service['service_owner']}"
         )
 
-    with profile_col2:
+        st.write(
+            f"**Approved Regions:** "
+            f"{selected_service['approved_regions']}"
+        )
+
+    with detail_col2:
         st.markdown("#### Architecture and Governance")
 
         st.write(
@@ -333,7 +587,7 @@ if selected_service_name != "Select a service":
             f"{selected_service['governance_readiness']}"
         )
 
-    with profile_col3:
+    with detail_col3:
         st.markdown("#### Risk and Review")
 
         st.write(
@@ -342,24 +596,13 @@ if selected_service_name != "Select a service":
         )
 
         st.write(
-            f"**Approved Regions:** "
-            f"{selected_service['approved_regions']}"
+            f"**Last Review Date:** "
+            f"{format_date(selected_service['last_review_date'])}"
         )
-
-        next_review_date = selected_service[
-            "next_review_date"
-        ]
-
-        if pd.notna(next_review_date):
-            formatted_review_date = (
-                next_review_date.strftime("%Y-%m-%d")
-            )
-        else:
-            formatted_review_date = "Not Available"
 
         st.write(
             f"**Next Review Date:** "
-            f"{formatted_review_date}"
+            f"{format_date(selected_service['next_review_date'])}"
         )
 
         review_expired_text = (
@@ -378,54 +621,132 @@ if selected_service_name != "Select a service":
     # Approved capabilities
     # -----------------------------------------------------
 
-    st.markdown("#### Approved Capabilities")
+    st.markdown("## Approved Capabilities")
 
-    raw_capabilities = str(
-        selected_service["approved_capabilities"]
+    display_success_items(
+        split_items(
+            selected_service["approved_capabilities"]
+        )
     )
 
-    capabilities = [
-        capability.strip()
-        for capability in raw_capabilities.split(";")
-        if capability.strip()
-    ]
 
-    if not capabilities:
-        st.warning(
-            "No approved capabilities are documented "
-            "for this service."
+    # -----------------------------------------------------
+    # Approved and prohibited use cases
+    # -----------------------------------------------------
+
+    use_case_col1, use_case_col2 = st.columns(2)
+
+    with use_case_col1:
+        st.markdown("## Approved Use Cases")
+
+        display_success_items(
+            split_items(
+                selected_service["approved_use_cases"]
+            )
         )
 
+    with use_case_col2:
+        st.markdown("## Prohibited Use Cases")
+
+        display_prohibited_items(
+            split_items(
+                selected_service["prohibited_use_cases"]
+            )
+        )
+
+
+    # -----------------------------------------------------
+    # Required security controls
+    # -----------------------------------------------------
+
+    st.markdown("## Required Security Controls")
+
+    display_control_items(
+        split_items(
+            selected_service["required_controls"]
+        )
+    )
+
+
+    # -----------------------------------------------------
+    # NIST CSF coverage
+    # -----------------------------------------------------
+
+    st.markdown("## NIST CSF Coverage")
+
+    nist_functions = split_items(
+        selected_service["nist_functions"]
+    )
+
+    if nist_functions:
+        nist_columns = st.columns(
+            min(len(nist_functions), 6)
+        )
+
+        for index, function in enumerate(nist_functions):
+            nist_columns[
+                index % len(nist_columns)
+            ].metric(
+                "NIST Function",
+                function,
+            )
+
     else:
-        capability_columns = st.columns(2)
+        st.warning(
+            "No NIST CSF mappings are documented."
+        )
 
-        for index, capability in enumerate(capabilities):
 
-            target_column = capability_columns[
-                index % 2
+    # -----------------------------------------------------
+    # Risk acceptance and compensating controls
+    # -----------------------------------------------------
+
+    st.markdown(
+        "## Risk Acceptance and Compensating Controls"
+    )
+
+    requires_risk_acceptance = (
+        str(
+            selected_service[
+                "risk_acceptance_required"
             ]
+        )
+        .strip()
+        .lower()
+        == "yes"
+    )
 
-            with target_column:
+    if requires_risk_acceptance:
+        st.warning(
+            "Formal risk acceptance or exception review is required."
+        )
 
-                if (
-                    capability
-                    == "No Enterprise Capabilities Approved"
-                ):
-                    st.error(
-                        f"✖ {capability}"
-                    )
+        compensating_controls = split_items(
+            selected_service[
+                "compensating_controls"
+            ]
+        )
 
-                else:
-                    st.success(
-                        f"✓ {capability}"
-                    )
+        if compensating_controls:
+            for control in compensating_controls:
+                st.write(f"• {control}")
+
+        else:
+            st.error(
+                "No compensating controls are documented."
+            )
+
+    else:
+        st.success(
+            "Formal risk acceptance is not currently required."
+        )
 
 
     # -----------------------------------------------------
     # Service description
     # -----------------------------------------------------
 
-    st.markdown("#### Service Description")
+    st.markdown("## Service Description")
 
     st.info(
         selected_service["description"]
@@ -447,21 +768,33 @@ st.divider()
 st.subheader("Leadership Exceptions")
 
 st.caption(
-    "Services that require governance, architecture, "
-    "risk, or review action."
+    "Services requiring governance, architecture, risk, "
+    "remediation, or review action."
 )
 
 exceptions = filtered[
-    filtered["governance_readiness"] != "Ready"
+    (
+        filtered["governance_readiness"] != "Ready"
+    )
+    | (
+        filtered["risk_acceptance_required"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+        == "yes"
+    )
 ].copy()
 
 exception_columns = [
     "service_name",
     "cloud_provider",
-    "governance_readiness",
+    "governance_decision",
     "risk_level",
-    "service_owner",
-    "next_review_date",
+    "current_blockers",
+    "action_owner",
+    "target_action_date",
+    "risk_acceptance_required",
 ]
 
 if exceptions.empty:
