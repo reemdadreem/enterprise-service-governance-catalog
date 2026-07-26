@@ -2,6 +2,10 @@
 
 [![Live Demo](https://img.shields.io/badge/Live%20Demo-Open%20Application-brightgreen)](https://enterprise-service-governance-catalog-kw.streamlit.app/)
 
+[![Python](https://img.shields.io/badge/Python-3.11-blue)](https://www.python.org/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-Application-red)](https://streamlit.io/)
+[![NIST CSF](https://img.shields.io/badge/NIST-CSF%202.0-darkblue)](https://www.nist.gov/cyberframework)
+
 > Enterprise Cloud Governance • Python • Streamlit • NIST CSF • Risk Management • Executive Reporting
 
 ---
