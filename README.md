@@ -1,5 +1,7 @@
 # 🛡️ Enterprise Service Governance Catalog
 
+[![Live Demo](https://img.shields.io/badge/Live%20Demo-Open%20Application-brightgreen)](https://enterprise-service-governance-catalog-kw.streamlit.app/)
+
 > Enterprise Cloud Governance • Python • Streamlit • NIST CSF • Risk Management • Executive Reporting
 
 ---
